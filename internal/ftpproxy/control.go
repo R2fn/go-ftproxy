@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/netip"
@@ -278,9 +279,12 @@ func (s *session) serverToClient() {
 			s.writeClientLines(lines)
 		}
 		if err != nil {
-			if !errors.Is(err, net.ErrClosed) {
-				s.log.Debug("server read", "err", err)
+			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+				return
 			}
+			// Framing/protocol failures kill the session: never leave this
+			// visible only at debug, it looks like a silent disconnect.
+			s.log.Info("upstream control read failed", "err", err)
 			return
 		}
 	}
