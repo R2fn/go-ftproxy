@@ -1,0 +1,6 @@
+bin/
+ftproxy-linux-*
+ftproxy-windows-*
+*.exe
+*.log
+coverage.out

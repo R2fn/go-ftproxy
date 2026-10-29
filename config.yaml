@@ -1,0 +1,55 @@
+# ftproxy configuration example.
+# IPv4 only. All durations are Go strings ("30s", "5m") or integer seconds.
+
+log:
+  level: info            # debug | info | warn | error
+  format: text           # text | json
+  output: stdout         # stdout | stderr | path to file
+  hide_passwords: false  # true = mask PASS/ACCT as ***** even at debug;
+                         # passwords are never logged at info and above either way
+
+metrics:
+  listen: "127.0.0.1:9105"   # serves /metrics and /healthz; empty disables
+
+dns:
+  # Dedicated DNS resolver for destination host names (optional).
+  # Omit `resolver` to use the system resolver. IPv4 only.
+  resolver: "10.10.0.53"     # or "10.10.0.53:5353"
+  timeout: 5s
+  cache_ttl: 60s
+
+proxies:
+  # --- Listener A: marketing subnet -> public mirror, login required ----
+  - name: public-mirror
+    listen: "192.168.10.5:21"        # explicit client-facing bind address
+    destination: "ftp.internal.example:21"
+    external_ip: "203.0.113.10"      # advertised in PASV/EPSV/PORT when behind NAT
+    passive_ports: "50000-50200"     # locally allocated data ports
+    control_idle_timeout: 30m        # suspended while a transfer runs
+    data_accept_timeout: 60s
+    upstream_connect_timeout: 15s
+    auth:
+      users:
+        - username: marketing
+          password: s3cret-2026
+    acl:
+      default: deny
+      rules:
+        - src: 192.168.10.0/24
+          action: allow
+
+  # --- Listener B: partner network -> partner server, no auth -----------
+  - name: partner
+    listen: "192.168.10.6:2121"
+    destination: "partner-origin.example"      # port 21 by default
+    data_bind_address: "192.168.10.6"          # where data listeners bind
+    source_address: "192.168.10.6"             # source IP for outgoing dials (multi-homed)
+    passive_ports: "50300-50500"
+    acl:
+      default: deny
+      rules:
+        - src: 172.16.0.0/16
+          dest: partner-origin.example:21
+          action: allow
+        - src: 192.168.10.0/24      # internal users must not use this port
+          action: deny
