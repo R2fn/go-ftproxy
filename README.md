@@ -107,13 +107,22 @@ PORT/EPRT: прокси поднимает листенер и сообщает 
 ## Логи
 
 info - рабочий уровень: отказы ACL, ошибки подключения к серверу, сбои
-дата-каналов, завершённые передачи (с инициирующей командой и режимом) и все
-негативные ответы FTP-сервера (4xx/5xx) с командой, которая их вызвала:
+дата-каналов, передачи (завершённые и оборванные) и все негативные ответы
+FTP-сервера (4xx/5xx) с командой, которая их вызвала:
 
 ```
 level=INFO msg="server error response" listener=mirror cmd="RETR file.xml" code=550 text="550 Failed to open file."
 level=INFO msg="data transfer finished" listener=mirror cmd="RETR file.xml" mode=passive bytes_upload=0 bytes_download=6051
+level=INFO msg="data transfer aborted" listener=mirror cmd="RETR big.zip" mode=passive bytes_upload=0 bytes_download=786913356 seconds=143 err="download write: connection reset by peer"
 ```
+
+Передача считается завершённой, если дата-канал закрылся штатно (EOF с обеих
+сторон). Иначе пишется `aborted` с причиной и фазой срыва: `read` - оборвался
+источник данных (сервер при `RETR`, клиент при `STOR`), `write` - отказал
+приёмник (клиент при `RETR`, сервер при `STOR`). Так видно, чья сторона
+порвала соединение: обрыв на чтении из origin - сеть между прокси и сервером,
+обрыв на записи к клиенту - клиент или его сегмент сети. Та же фаза идёт в
+метрику `ftpproxy_data_errors_total{reason="transfer"}`.
 
 debug дополнительно пишет весь FTP-диалог (`client cmd`, `server resp`,
 переписанные 227/229) - им удобно разбирать проблемы с дата-каналами.
@@ -185,7 +194,8 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ftproxy
 (валидность, неизвестные поля, duration-форматы), DNS-резолвер (in-process
 DNS-сервер, кэш, stale-fallback) и e2e-прогон с фейковым origin-сервером:
 пассивные RETR/STOR, активный PORT, авторизация на прокси, deny по ACL,
-отказ по плохому source_address.
+отказ по плохому source_address, запись об обрыве передачи при сбросе
+дата-канала клиентом.
 
 ## Авторы
 

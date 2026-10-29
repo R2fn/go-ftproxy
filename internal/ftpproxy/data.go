@@ -191,7 +191,7 @@ func (s *session) runPlan(plan *dataPlan) {
 		"server", serverSide.RemoteAddr().String())
 
 	start := time.Now()
-	up, down := pipeData(s.log, clientSide, serverSide)
+	up, down, xerr := pipeData(s.log, clientSide, serverSide)
 	clientSide.Close()
 	serverSide.Close()
 	if up > 0 {
@@ -200,10 +200,17 @@ func (s *session) runPlan(plan *dataPlan) {
 	if down > 0 {
 		s.p.m.DataBytesTotal.WithLabelValues(s.p.Name, "download").Add(float64(down))
 	}
-	s.log.Info("data transfer finished", "cmd", s.getXferCmd(), "mode", plan.mode,
-		"bytes_upload", up, "bytes_download", down)
 	elapsed := time.Since(start).Seconds()
 	s.p.m.DataSecondsHistogram.WithLabelValues(s.p.Name).Observe(elapsed)
+	if xerr != nil {
+		s.p.m.DataErrorsTotal.WithLabelValues(s.p.Name, "transfer").Inc()
+		s.log.Info("data transfer aborted", "cmd", s.getXferCmd(), "mode", plan.mode,
+			"bytes_upload", up, "bytes_download", down, "seconds", int(elapsed),
+			"err", xerr)
+		return
+	}
+	s.log.Info("data transfer finished", "cmd", s.getXferCmd(), "mode", plan.mode,
+		"bytes_upload", up, "bytes_download", down)
 }
 
 func (s *session) closePlan(plan *dataPlan) {

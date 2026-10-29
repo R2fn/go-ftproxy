@@ -2,6 +2,7 @@ package ftpproxy
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -18,15 +19,17 @@ import (
 // so when one direction finishes we immediately release the *other* side's
 // blocked read with an expired deadline before half-closing. This keeps FIN
 // propagation prompt on every platform.
-func pipeData(log *slog.Logger, clientSide, serverSide net.Conn) (up, down int64) {
+func pipeData(log *slog.Logger, clientSide, serverSide net.Conn) (up, down int64, err error) {
 	upDone := make(chan struct{})
 	downDone := make(chan struct{})
+	var upErr, downErr error
 
 	// client -> server (upload)
 	go func() {
-		n, err := copyStream(serverSide, clientSide)
+		n, e := copyStream(serverSide, clientSide, "upload")
 		up = n
-		log.Debug("upload copy done", "bytes", n, "err", err)
+		upErr = e
+		log.Debug("upload copy done", "bytes", n, "err", e)
 		// Release the paired download reader, then half-close to the server.
 		serverSide.SetReadDeadline(time.Now())
 		closeWrite(serverSide)
@@ -35,9 +38,10 @@ func pipeData(log *slog.Logger, clientSide, serverSide net.Conn) (up, down int64
 
 	// server -> client (download)
 	go func() {
-		n, err := copyStream(clientSide, serverSide)
+		n, e := copyStream(clientSide, serverSide, "download")
 		down = n
-		log.Debug("download copy done", "bytes", n, "err", err)
+		downErr = e
+		log.Debug("download copy done", "bytes", n, "err", e)
 		// Release the paired upload reader, then half-close to the client
 		// so it sees EOF on the data connection.
 		clientSide.SetReadDeadline(time.Now())
@@ -47,7 +51,13 @@ func pipeData(log *slog.Logger, clientSide, serverSide net.Conn) (up, down int64
 
 	<-upDone
 	<-downDone
-	return up, down
+	// On a healthy transfer at most one direction sees a real error: the
+	// other is either EOF or a deadline release we set ourselves. Report
+	// the download error first, it is the one that kills a RETR.
+	if downErr != nil {
+		return up, down, downErr
+	}
+	return up, down, upErr
 }
 
 // copyStream copies with a fixed buffer in userspace. Deliberately avoids
@@ -55,7 +65,11 @@ func pipeData(log *slog.Logger, clientSide, serverSide net.Conn) (up, down int64
 // sockets and constant memory regardless of file size (up to terabytes).
 // A read deadline error is treated as a clean end of stream: pipeData uses
 // deadlines only to release paired blocked reads.
-func copyStream(dst, src net.Conn) (int64, error) {
+//
+// Real errors are tagged with direction and phase so the log says who broke
+// the transfer: "read" fails when the source (FTP server on a RETR) resets,
+// "write" fails when the sink (the client on a RETR) goes away.
+func copyStream(dst, src net.Conn, dir string) (int64, error) {
 	const chunk = 256 << 10
 	buf := make([]byte, chunk)
 	var total int64
@@ -65,7 +79,7 @@ func copyStream(dst, src net.Conn) (int64, error) {
 			nw, werr := dst.Write(buf[:nr])
 			total += int64(nw)
 			if werr != nil {
-				return total, werr
+				return total, fmt.Errorf("%s write: %w", dir, werr)
 			}
 		}
 		if rerr == nil {
@@ -78,7 +92,7 @@ func copyStream(dst, src net.Conn) (int64, error) {
 		if errors.As(rerr, &nerr) && nerr.Timeout() {
 			return total, nil
 		}
-		return total, rerr
+		return total, fmt.Errorf("%s read: %w", dir, rerr)
 	}
 }
 

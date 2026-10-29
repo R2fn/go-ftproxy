@@ -129,6 +129,22 @@ func (f *fakeServer) handle(c net.Conn) {
 				continue
 			}
 			w("150 opening data")
+			if arg == "huge" {
+				// Stream far more than any socket buffer so a transfer
+				// cannot finish instantly.
+				payload := make([]byte, 64<<10)
+				for i := range payload {
+					payload[i] = byte(i)
+				}
+				for i := 0; i < 256; i++ { // 16 MiB
+					if _, err := conn.Write(payload); err != nil {
+						break
+					}
+				}
+				conn.Close()
+				w("226 transfer complete")
+				continue
+			}
 			payload := []byte("0123456789ABCDEF")
 			conn.Write(payload)
 			conn.Close()
@@ -609,6 +625,56 @@ func TestTransferCommandLogged(t *testing.T) {
 	}
 	if !strings.Contains(logs, `msg="data transfer finished"`) {
 		t.Errorf("transfer record missing:\n%s", logs)
+	}
+}
+
+// A transfer that dies mid-stream must be distinguishable from a clean one
+// at info level: record says aborted, names the command, and tags which
+// phase failed (read from origin vs write to client).
+func TestTransferAbortLoggedAtInfo(t *testing.T) {
+	fs := newFakeServer(t)
+	var buf bytes.Buffer
+	infoLog := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	cfg := testCfg("127.0.0.1:0", fs.addr())
+	p := startProxyLog(t, cfg, infoLog, config.LogConfig{})
+
+	cl := dialClient(t, p.Addr().String())
+	cl.expect("220")
+	cl.send("PASV")
+	body := cl.expect("227")
+	ip, port, ok := parse227Addr([]string{body})
+	if !ok {
+		t.Fatalf("bad 227: %q", body)
+	}
+	d, err := net.Dial("tcp4", hostPort(ip, port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := d.(*net.TCPConn)
+	cl.send("RETR huge")
+	cl.expect("150")
+
+	// Prime the pipe, then RST the data channel from the client side,
+	// like a client that gives up on a multi-GB download.
+	first := make([]byte, 4096)
+	data.Read(first)
+	data.SetLinger(0) // Close() sends RST, not FIN
+	data.Close()
+
+	deadline := time.Now().Add(10 * time.Second)
+	var logs string
+	for time.Now().Before(deadline) {
+		logs = buf.String()
+		if strings.Contains(logs, `msg="data transfer aborted"`) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(logs, `cmd="RETR huge"`) {
+		t.Errorf("aborted record missing cmd:\n%s", logs)
+	}
+	if !strings.Contains(logs, `err="download write:`) {
+		t.Errorf("aborted record missing failure phase:\n%s", logs)
 	}
 }
 
