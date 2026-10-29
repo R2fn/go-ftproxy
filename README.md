@@ -189,7 +189,9 @@ sudo systemctl daemon-reload && sudo systemctl enable --now ftproxy
 
 ## Тесты
 
-`go test ./...` покрывает: парсинг и переписывание PORT/EPRT/227/229, ACL
+`go test ./...` покрывает: парсинг и переписывание PORT/EPRT/227/229, кадрирование
+многострочных ответов сервера (`NNN-` ... `NNN `, у vsftpd так выглядит FEAT),
+ACL
 (первое совпадение, dest-CIDR по разрешённым IP, отказ IPv6), конфиг
 (валидность, неизвестные поля, duration-форматы), DNS-резолвер (in-process
 DNS-сервер, кэш, stale-fallback) и e2e-прогон с фейковым origin-сервером:

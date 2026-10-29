@@ -162,6 +162,15 @@ func (f *fakeServer) handle(c net.Conn) {
 			f.stored = got
 			f.mu.Unlock()
 			w(fmt.Sprintf("226 stored %d bytes", len(got)))
+		case "FEAT":
+			// vsftpd-style multi-line: continuation lines are arbitrary
+			// text (" EPRT"), terminator repeats the code.
+			w("211-Extensions supported:")
+			w(" EPRT")
+			w(" IDLE")
+			w(" MDTM")
+			w(" SIZE")
+			w("211 End")
 		case "QUIT":
 			w("221 bye")
 			return
@@ -626,6 +635,35 @@ func TestTransferCommandLogged(t *testing.T) {
 	if !strings.Contains(logs, `msg="data transfer finished"`) {
 		t.Errorf("transfer record missing:\n%s", logs)
 	}
+}
+
+// FEAT (sent by WinSCP right after login) gets a multi-line 211 from vsftpd
+// with space-indented command lines. The proxy must relay it whole and keep
+// the control stream in sync.
+func TestProxyFeatMultiLineResponse(t *testing.T) {
+	fs := newFakeServer(t)
+	cfg := testCfg("127.0.0.1:0", fs.addr())
+	p := startProxyLog(t, cfg, discardLogger(), config.LogConfig{})
+
+	cl := dialClient(t, p.Addr().String())
+	cl.expect("220")
+	cl.send("FEAT")
+	code, lines, err := readResponse(cl.r)
+	if err != nil {
+		t.Fatalf("FEAT relay: %v", err)
+	}
+	if code != "211" || len(lines) != 6 {
+		t.Fatalf("bad FEAT relay: code=%s lines=%v", code, lines)
+	}
+	if lines[1] != " EPRT" || lines[5] != "211 End" {
+		t.Fatalf("FEAT body corrupted: %q", lines)
+	}
+
+	// Session must still be alive and in sync afterwards.
+	cl.send("TYPE I")
+	cl.expect("200")
+	cl.send("QUIT")
+	cl.expect("221")
 }
 
 // A transfer that dies mid-stream must be distinguishable from a clean one

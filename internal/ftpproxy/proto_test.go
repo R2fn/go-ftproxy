@@ -1,6 +1,8 @@
 package ftpproxy
 
 import (
+	"bufio"
+	"strings"
 	"testing"
 )
 
@@ -69,8 +71,41 @@ func TestParse227And229(t *testing.T) {
 	}
 }
 
-func TestReadResponseMultiLine(t *testing.T) {
-	// handled via bufio in integration; here test framing helper
-	// "220-line\r\n220 tail" is a single multi-line response.
-	// covered by readControlLine usage in integration tests.
+func TestReadResponseFraming(t *testing.T) {
+	// vsftpd-style FEAT: continuation lines are arbitrary text (" EPRT"),
+	// the response ends only on a line repeating the code + space.
+	in := "211-Extensions supported:\r\n EPRT\r\n IDLE\r\n MDTM\r\n SIZE\r\n211 End\r\n200 ok\r\n"
+	br := bufio.NewReader(strings.NewReader(in))
+	code, lines, err := readResponse(br)
+	if err != nil {
+		t.Fatalf("FEAT response: %v", err)
+	}
+	if code != "211" || len(lines) != 6 || lines[5] != "211 End" {
+		t.Fatalf("bad framing: code=%s lines=%v", code, lines)
+	}
+	// Stream stays in sync: next response parses cleanly.
+	code, lines, err = readResponse(br)
+	if err != nil || code != "200" || len(lines) != 1 {
+		t.Fatalf("next response: code=%s lines=%v err=%v", code, lines, err)
+	}
+
+	// Terminator line exactly equal to the code (no trailing space).
+	br = bufio.NewReader(strings.NewReader("220-\r\n220\r\n"))
+	code, lines, err = readResponse(br)
+	if err != nil || code != "220" || len(lines) != 2 {
+		t.Fatalf("bare terminator: code=%s lines=%v err=%v", code, lines, err)
+	}
+
+	// Single-line responses.
+	br = bufio.NewReader(strings.NewReader("230 Login ok\r\n"))
+	code, lines, err = readResponse(br)
+	if err != nil || code != "230" || len(lines) != 1 {
+		t.Fatalf("single line: code=%s lines=%v err=%v", code, lines, err)
+	}
+
+	// A garbage first line is still an error.
+	br = bufio.NewReader(strings.NewReader("garbage\r\n"))
+	if _, _, err = readResponse(br); err == nil {
+		t.Fatal("garbage first line must error")
+	}
 }

@@ -31,21 +31,34 @@ func readControlLine(br *bufio.Reader) (string, error) {
 }
 
 // readResponse reads one complete (possibly multi-line) server response.
+// RFC 959 framing: the first line starts with the 3-digit code; if the code
+// is followed by '-' the response continues until a line that repeats the
+// code followed by a space (or is exactly the code). Continuation lines are
+// arbitrary text - vsftpd's FEAT lists commands as " EPRT" style lines.
 func readResponse(br *bufio.Reader) (code string, lines []string, err error) {
+	first, rerr := readControlLine(br)
+	if first == "" {
+		return "", nil, rerr
+	}
+	if len(first) < 3 || first[0] < '0' || first[0] > '9' || first[1] < '0' || first[1] > '9' || first[2] < '0' || first[2] > '9' {
+		return "", nil, fmt.Errorf("malformed server response: %q", first)
+	}
+	code = first[:3]
+	lines = []string{first}
+	if len(first) == 3 || first[3] != '-' {
+		return code, lines, nil
+	}
 	for {
-		line, rerr := readControlLine(br)
+		line, lerr := readControlLine(br)
 		if line == "" {
-			return "", nil, rerr
-		}
-		if len(line) < 3 || line[0] < '0' || line[0] > '9' || line[1] < '0' || line[1] > '9' || line[2] < '0' || line[2] > '9' {
-			return "", nil, fmt.Errorf("malformed server response: %q", line)
+			return "", nil, lerr
 		}
 		lines = append(lines, line)
-		if len(line) == 3 || line[3] != '-' {
-			return line[:3], lines, nil
+		if line[:3] == code && (len(line) == 3 || line[3] == ' ') {
+			return code, lines, nil
 		}
-		if rerr != nil {
-			return "", nil, rerr
+		if lerr != nil {
+			return "", nil, lerr
 		}
 	}
 }
